@@ -31,6 +31,15 @@ const KEY_NAMES = {
     master12: 'master_key_12',
 };
 const POLL_MS = 5000;
+// Why the board restarted, when it was not its own doing (after each session it restarts on
+// purpose, as "software").
+const RESTART_REASONS = {
+    brownout: 'the board restarted because its power dipped (brownout), most likely as its radio started sending. Try another USB cable or port, a powered hub, or a different board.',
+    panic: 'the board restarted after a crash.',
+    'interrupt-watchdog': 'the board restarted: it stopped responding (watchdog).',
+    'task-watchdog': 'the board restarted: it stopped responding (watchdog).',
+    watchdog: 'the board restarted: it stopped responding (watchdog).',
+};
 
 const state = {
     manifest: null,
@@ -327,6 +336,8 @@ async function adoptEsp(device) {
     });
     device.addEventListener('reattached', () => {
         if (state.esp !== device) return;
+        const why = RESTART_REASONS[device.info?.reset];
+        if (why) log('board', why);
         state.adapter?.quiet(15000);
         refreshEsp();
     });
@@ -1202,9 +1213,9 @@ const CELIO_REFUSALS = {
 const CELIO_REFUSAL_END_MS = 3000;
 const ROOM_OF_LINK_TYPE = { 0x1133: 4, 0x2233: 1, 0x2244: 2 };
 
-// As the parent the board finds and joins the Switch's room and the page joins its group
-// once the other Game Boy Advance has linked; as the child the page opens a group the
-// Switch joins, then links with the other Game Boy Advance.
+// As the parent the board finds the Switch's room and its group, and the page joins the group
+// once the other side is ready; as the child the page opens a group the Switch joins, and the
+// two exchange players once the other side's is in.
 function celioView(session, status) {
     if (!session.role) return { headline: 'Waiting for the Celio server…', hint: 'It decides which side leads once both have pressed Start.', tone: '' };
     if (session.leading) return celioLeadView(session, status);
@@ -1212,9 +1223,9 @@ function celioView(session, status) {
     if (!status || status.state === 'scan') return { headline: 'Your Switch leads. Looking for its group…', hint: 'On the Switch: upstairs in a Pokémon Center, the Direct Corner, then the Trade Center or the Colosseum. Become the group leader.', tone: '' };
     if (status.state !== 'run') return { headline: 'Joining the Switch’s room…', hint: '', tone: '' };
     if (session.switchNotReady) return { headline: 'The Switch’s game cannot trade with Ruby or Sapphire yet.', hint: 'It has to finish the Sevii Islands story first (Cerulean Cave shows on its town map). The other player’s game says the link partners made different selections.', tone: 'warn' };
-    if (session.tradeReady) return { headline: 'Joining the Switch’s group…', hint: 'Accept the join on the Switch.', tone: 'good' };
-    if (session.cableOpen) return { headline: 'The other player is linking…', hint: '', tone: 'good' };
-    return { headline: 'In the Switch’s room. Waiting for the other player.', hint: 'They talk to the Cable Club attendant for the same room.', tone: 'good' };
+    if (session.switchJoining) return { headline: 'Joining the Switch’s group…', hint: 'Accept CELIO on the Switch.', tone: 'good' };
+    if (session.switchGroupOpen) return { headline: 'The Switch’s group is open. Waiting for the other player.', hint: 'They join the group on their side, then this page joins yours.', tone: 'good' };
+    return { headline: 'In the Switch’s room. Waiting for its group.', hint: 'On the Switch: the Trade Center or the Colosseum, and become the group leader.', tone: 'good' };
 }
 
 function celioLeadView(session, status) {

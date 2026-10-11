@@ -7,10 +7,13 @@
 // - slave: the parent, as CableTranslator, with the Switch leading a group it joins;
 // - master: the child, as ReverseTranslator, leading a group the Switch joins.
 //
-// Celio protocol (Celio-Server session.ts, Celio-Client linkExchangeSession.ts): the server
-// pairs two clients by session id and relays each one's deviceData to the other, in order,
-// waiting for an acknowledgement each time. Link statuses go to the server only, which
-// answers with device commands.
+// Celio protocol (Celio-Server session.ts, Celio-Client linkExchangeSession.ts and
+// commandEmitter.socketIO.ts): the server pairs two clients by session id. deviceData goes
+// as batches of { sequence, data[32] }, each sent again until acknowledged with up to 64 in
+// flight; the server drops sequences it has and relays the rest the same way, so they can
+// arrive out of order and twice. Link statuses go to the server only, in order and
+// acknowledged, and it answers with device commands; commands and session events carry a
+// uuid and come again until acknowledged.
 
 import { SocketIo } from './socketio.js';
 import { CableTranslator, CMD_WORDS } from './translator.js';
@@ -35,6 +38,7 @@ const REOPEN_MS = 400;         // the adapter's pause before a new section
 // that word after this long, they go anyway.
 const PEER_WAIT_MS = 4000;
 const FRAME_MS = 1000 / 59.7275;
+const DATA_IN_FLIGHT = 64;
 
 const uuid = () => crypto.randomUUID();
 
@@ -66,13 +70,37 @@ export class CelioLink {
         this.gotClose = false;
         this.exitSeen = false;
         this.commands = new Set();
+        this.outgoing = [];
+        this.inFlight = 0;
+        this.statuses = Promise.resolve();
         this.timer = null;
         this.onState = null;
         socket.on('deviceCommand', (packet) => this.onCommand(packet));
-        socket.on('deviceData', (packet) => this.onData(packet));
+        socket.on('deviceData', (packets) => { if (Array.isArray(packets)) for (const packet of packets) this.onData(packet); });
     }
 
-    status(value) { this.socket.emit('deviceStatus', { uuid: uuid(), linkStatus: value }); }
+    status(value) {
+        const packet = { uuid: uuid(), linkStatus: value };
+        this.statuses = this.statuses.then(() => this.socket.requestWithRetry('deviceStatus', packet))
+            .catch((error) => this.log(`the server did not take a link status: ${error.message}`));
+    }
+
+    sendData(packet) {
+        this.outgoing.push(packet);
+        this.fillData();
+    }
+
+    fillData() {
+        while (this.running && this.inFlight < DATA_IN_FLIGHT && this.outgoing.length) {
+            const next = this.outgoing.shift();
+            this.inFlight++;
+            // The other side plays sequences in order and cannot skip one: no giving up while
+            // the socket is up.
+            this.socket.requestWithRetry('deviceData', [next], { retries: Infinity, stop: () => !this.running })
+                .catch((error) => this.log(`the server did not take data: ${error.message}`))
+                .finally(() => { this.inFlight--; this.fillData(); });
+        }
+    }
 
     setConnected(value) {
         if (this.connected === value) return;
@@ -89,6 +117,7 @@ export class CelioLink {
 
     stop() {
         this.running = false;
+        this.outgoing = [];
         clearInterval(this.timer);
         this.setConnected(false);
     }
@@ -160,10 +189,10 @@ export class CelioLink {
         this.log(why);
     }
 
-    // Packets arrive in order but may repeat or run ahead after a retry.
+    // Packets may arrive out of order and twice: played in sequence order, once.
     onData(packet) {
         if (!packet || !Array.isArray(packet.data)) return;
-        if (packet.sequence < this.expected) return;
+        if (!Number.isInteger(packet.sequence) || packet.sequence < this.expected) return;
         this.buffered.set(packet.sequence, packet.data);
         while (this.buffered.has(this.expected)) {
             const data = this.buffered.get(this.expected);
@@ -212,7 +241,7 @@ export class CelioLink {
         const data = this.batch.flat();
         this.batch = [];
         if (!data.some((w) => w)) return;
-        this.socket.emit('deviceData', { sequence: this.sequence++, data });
+        this.sendData({ sequence: this.sequence++, data });
     }
 
     // A command whose first word is 0x5FFF, sent and received, ends the section, as the
@@ -262,9 +291,10 @@ export class CelioSession extends EventTarget {
     get leading() { return this.role === 'child'; }
     get needsRoom() { return this.leading && this.activity === null; }
     get linked() { return this.leading ? Boolean(this.leader?.linked && this.translator?.parentLP) : Boolean(this.translator?.linked); }
-    get tradeReady() { return !this.leading && Boolean(this.translator?.haveRubyLP); }
     get cableOpen() { return Boolean(this.link?.connected); }
     get switchNotReady() { return !this.leading && Boolean(this.translator?.hostNotReady); }
+    get switchGroupOpen() { return !this.leading && Boolean(this.translator?.groupSeen); }
+    get switchJoining() { return !this.leading && Boolean(this.translator?.joined); }
     get switchJoined() { return Boolean(this.leader?.joined); }
     get switchKnown() { return this.leading && Boolean(this.translator?.ready); }
     get switchLeft() { return this.leader?.state === 'closed'; }
@@ -278,9 +308,18 @@ export class CelioSession extends EventTarget {
 
     async open() {
         const socket = this.socket = new SocketIo(this.server, { clientId: uuid() });
-        socket.on('partnerJoined', () => { this.partner = true; this.link?.setPartner(true); this.changed(); });
-        socket.on('partnerLeft', () => { this.partner = false; this.link?.setPartner(false); this.notice('The other player left the session.'); this.changed(); });
-        socket.on('sessionClose', () => { this.notice('The session has ended.', ''); this.end(); });
+        // Session events come again until acknowledged: each acted on once, by uuid.
+        const seen = new Set();
+        const once = (handler) => (event) => {
+            if (event?.uuid) {
+                if (seen.has(event.uuid)) return;
+                seen.add(event.uuid);
+            }
+            handler();
+        };
+        socket.on('partnerJoined', once(() => { this.partner = true; this.link?.setPartner(true); this.changed(); }));
+        socket.on('partnerLeft', once(() => { this.partner = false; this.link?.setPartner(false); this.notice('The other player left the session.'); this.changed(); }));
+        socket.on('sessionClose', once(() => { this.notice('The session has ended.', ''); this.end(); }));
         socket.addEventListener('disconnect', () => { this.notice('Lost the connection to the Celio server.', 'bad'); this.end(); });
         await socket.connect();
     }
@@ -339,6 +378,7 @@ export class CelioSession extends EventTarget {
                 connect: (devid) => toBoard(command(RFU.CONNECT_REQ, devid)),
                 disconnect: () => toBoard(command(RFU.DISCONNECT, 0)),
                 log: (message) => this.log(message),
+                holdJoin: true,
             });
             translator.onLinked = () => this.changed();
             translator.bypassNationally = this.bypassNationally;
@@ -352,7 +392,9 @@ export class CelioSession extends EventTarget {
             gameCommand: (words) => this.translator?.gameCommand(words),
             nextCommand: () => this.translator?.nextCommand() ?? null,
             reset: () => this.translator?.cableReset(),
-            ready: () => (master ? Boolean(this.translator?.ready) : true),
+            // Each side is ready once its Switch is: leading a group the page has seen, or
+            // waiting in the page's group. Joining, and the player exchange, come after.
+            ready: () => Boolean(master ? this.translator?.ready : this.translator?.readyToLink),
         };
     }
 
