@@ -3,6 +3,8 @@
 // A message is a 6-byte header block (id, CRC, size) followed by blocks of up
 // to 252 bytes. The server drives the client by sending it scripts.
 
+import { judge, readAnswer, relocate, verifyScript } from './verify.js';
+
 export const MG_LINK = {
     CLIENT_SCRIPT: 16,
     GAME_DATA: 17,
@@ -132,6 +134,16 @@ export const CLIENT_SCRIPTS = {
         [CLI.SAVE_CARD],
         [CLI.SEND_READY_END],
         [CLI.RETURN, CLI_MSG.CARD_RECEIVED],
+    ]),
+    // Runs the address check (cards/verify.s), sends its answer, then waits
+    // for the next script.
+    verify: clientScript([
+        [CLI.RECV, MG_LINK.RAM_SCRIPT],
+        [CLI.LOAD_TOSS_RESPONSE],
+        [CLI.RUN_BUFFER_SCRIPT],
+        [CLI.SEND_LOADED],
+        [CLI.RECV, MG_LINK.CLIENT_SCRIPT],
+        [CLI.COPY_RECV],
     ]),
     hadCard: clientScript([[CLI.SEND_READY_END], [CLI.RETURN, CLI_MSG.HAD_CARD]]),
     nothingSent: clientScript([[CLI.SEND_READY_END], [CLI.RETURN, CLI_MSG.NOTHING_SENT]]),
@@ -302,7 +314,12 @@ export class WonderCardServer {
         const payload = this.payload(game);
         if (!payload) return this.end('unsupported', CLIENT_SCRIPTS.cantAccept, game);
         const card = shareableCard(payload.card.subarray(0, WONDER_CARD_BYTES));
-        const ramScript = payload.script;
+        let ramScript = payload.script;
+        if (payload.checks) {
+            const verdict = await this.verify(payload.checks);
+            if (!verdict.ok) return { ...(await this.end('unverified', CLIENT_SCRIPTS.cantAccept, game)), missing: verdict.missing };
+            if (verdict.moved.length) ramScript = relocate(ramScript, payload.checks, verdict.distances);
+        }
 
         const flagId = cardFlagId(card);
         const sameCard = game.cardFlagId !== 0 && game.cardFlagId === flagId;
@@ -331,6 +348,22 @@ export class WonderCardServer {
         }
         await this.receive(MG_LINK.READY_END);
         return { outcome: 'sent', game };
+    }
+
+    // Has the Switch check the addresses a script was built from (verify.js);
+    // the client then waits for the next script. Logs only what was not where
+    // expected.
+    async verify(checks, options) {
+        this.send(MG_LINK.CLIENT_SCRIPT, CLIENT_SCRIPTS.verify);
+        this.send(MG_LINK.RAM_SCRIPT, verifyScript(checks));
+        const distances = readAnswer(await this.receive(MG_LINK.RESPONSE), checks);
+        const verdict = { ...judge(checks, distances, options), distances };
+        const moved = verdict.moved.map(([name, distance]) => `${name} ${distance > 0 ? '+' : ''}${distance}`);
+        if (moved.length || verdict.missing.length) {
+            this.log('address check: ' + [moved.length && `moved ${moved.join(', ')}`,
+                verdict.missing.length && `not found ${verdict.missing.join(', ')}`].filter(Boolean).join('; '));
+        }
+        return verdict;
     }
 
     async end(outcome, script, game) {

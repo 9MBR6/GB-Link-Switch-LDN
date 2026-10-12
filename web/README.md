@@ -94,7 +94,7 @@ firmware/tools/package_web.py
 | `js/keys.js` | reading `prod.keys` |
 | `js/trade/` | trading without a GBA |
 | `js/cable/` | Ruby and Sapphire: the adapter's cable mode and the translation to the Switch's wireless (`translator.js` is MPL-2.0, ported from [mgba_LDN](https://github.com/Gr3nSkyDragon/mgba_LDN)) |
-| `js/gift/` | Mystery Gift: the group the Switch joins as a friend, the gift exchange (from [gblink-wondercards](https://github.com/GB-Link/gblink-wondercards)) and the cards; `team.js` is written by `cards/build.mjs`, `wc3.js` reads `.wc3` files |
+| `js/gift/` | Mystery Gift: the group the Switch joins as a friend, the gift exchange (from [gblink-wondercards](https://github.com/GB-Link/gblink-wondercards)) and the cards; `team.js` and `rom-checks.js` are written by `cards/build.mjs`, `verify.js` makes sure a European game is the one a card was made for, `wc3.js` reads `.wc3` files |
 
 ## Tests
 

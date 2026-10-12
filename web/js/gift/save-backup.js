@@ -10,6 +10,7 @@ import {
     CLI, CLIENT_SCRIPTS, MG_LINK, WonderCardServer, clientScript, parseGameData, romId,
 } from './mystery-gift.js';
 import { BACKED_UP, SAVE_SCRIPTS } from './save-payloads.js';
+import { saveChecks } from './verify.js';
 
 export const SAVE_BYTES = 0x20000;
 // Passes per client script: each takes 24 of its 1024 bytes.
@@ -118,6 +119,11 @@ export class SaveBackupServer extends WonderCardServer {
         if (!game.valid) return this.end('cant-accept', CLIENT_SCRIPTS.cantAccept, game);
         const scripts = SAVE_SCRIPTS[romId(game)];
         if (!scripts) return this.end('unsupported', CLIENT_SCRIPTS.cantAccept, game);
+        const checks = saveChecks(romId(game), 'backup');
+        if (checks) {
+            const verdict = await this.verify(checks);
+            if (!verdict.ok) return { ...(await this.end('unverified', CLIENT_SCRIPTS.cantAccept, game)), missing: verdict.missing };
+        }
 
         const key = playerKey(game);
         const kept = unfinished.get(key) ?? { save: new Uint8Array(SAVE_BYTES), at: 0 };
