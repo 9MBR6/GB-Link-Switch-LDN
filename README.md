@@ -141,21 +141,20 @@ as the `FL - …` files in Project Pokémon's
 
 *Back up the save* and *Restore a save* sit at the end of the list. They go the same way as
 a card. A backup copies the whole 128 KB save to the page, which offers it as a `.sav` file
-for PKHeX or an emulator; the game shows a message and saves nothing. A restore writes the
-chosen `.sav` beside the game's newest save, checks every sector, then lets the game load it
-and save; if anything is off, or the link drops halfway, the game keeps the save it had.
-Either takes one to four minutes, depending on how much of the save is empty.
+for PKHeX or an emulator; the game shows a message and saves nothing. A restore puts the
+chosen `.sav` into the game, checks that all of it arrived intact, then lets the game load
+and save it. If anything is wrong, or the link drops halfway, the game keeps the save it
+had. Either takes one to four minutes, depending on how much of the save is empty.
 
 MYSTERY GIFT shows on the main menu once the game has it unlocked: answer a Poké Mart
 questionnaire with LINK TOGETHER WITH ALL, then save.
 
-On a Game Boy Advance these cards come in over WIRELESS COMMUNICATION, from a distribution
-kiosk. The Switch's game only lists a kiosk there, and a group reaching it over the Switch's
-wireless is always reported as another game, never as a kiosk, so the page shares its cards
-the way a friend does. The card and what it does are the same.
+On a Game Boy Advance these cards arrive through WIRELESS COMMUNICATION, from a store
+kiosk. On the Switch that option only accepts a kiosk, so the page sends its cards the way a
+friend would, through FRIEND. The cards work the same either way.
 
-The GB-Link Team's cards are built for the Switch's English FireRed and LeafGreen; see
-[`cards/`](cards/README.md).
+The GB-Link Team's cards are built for the Switch's FireRed and LeafGreen in English,
+French, German, Italian and Spanish; see [`cards/`](cards/README.md).
 
 ## Repository layout
 

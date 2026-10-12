@@ -1483,7 +1483,12 @@ function giftResultView(result) {
         case 'kept-card': return { headline: `Not sent: ${who} kept the Wonder Card it had.`, hint: '', tone: 'warn' };
         case 'cant-accept': return { headline: 'The Switch could not take a Wonder Card.', hint: '', tone: 'warn' };
         case 'unsupported': if (result.event?.kind === 'backup') return { headline: `The backup does not run on ${gift.describeGameCode(result.game.gameCode)}.`, hint: 'It works on the Switch’s FireRed and LeafGreen.', tone: 'warn' };
-            return { headline: `Not sent: ${name} does not run on ${gift.describeGameCode(result.game.gameCode)}.`, hint: 'The GB-Link Team’s cards run on the Switch’s English FireRed and LeafGreen.', tone: 'warn' };
+            return { headline: `Not sent: ${name} does not run on ${gift.describeGameCode(result.game.gameCode)}.`, hint: 'The GB-Link Team’s cards run on the Switch’s FireRed and LeafGreen in English, French, German, Italian and Spanish.', tone: 'warn' };
+        case 'unverified': {
+            const save = result.event?.kind === 'backup' || result.event?.kind === 'restore';
+            const what = save ? `The ${result.event.kind}` : `Not sent: ${name}`;
+            return { headline: `${what} does not work with this copy of ${gift.describeGameCode(result.game.gameCode)}.`, hint: `${save ? 'Nothing ran' : 'Nothing was sent'}, and the Switch is as it was.`, tone: 'warn' };
+        }
         case 'backed-up': return result.summary.sound
             ? { headline: `${who}’s save is backed up.`, hint: 'Download the .sav file below.', tone: 'good' }
             : { headline: `${who}’s save came over, but neither of its two copies is whole.`, hint: 'Download the .sav file below to keep it, and try the backup again.', tone: 'warn' };

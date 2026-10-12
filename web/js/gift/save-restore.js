@@ -13,6 +13,7 @@ import {
 } from './mystery-gift.js';
 import { NOT_RESTORED, RESTORED, SAVE_SCRIPTS } from './save-payloads.js';
 import { SAVE_BYTES, describeSave } from './save-backup.js';
+import { saveChecks } from './verify.js';
 
 export const RESTORE_ROMS = Object.keys(SAVE_SCRIPTS);
 
@@ -180,6 +181,12 @@ export class SaveRestoreServer extends WonderCardServer {
         if (!scripts) return this.end('unsupported', CLIENT_SCRIPTS.cantAccept, game);
         if (this.save.length !== SAVE_BYTES || !describeSave(this.save).sound) {
             return this.finish(false, game, { reason: 'unsound' });
+        }
+        // The restore writes the save chip: its routines must be exactly where predicted.
+        const checks = saveChecks(romId(game), 'restore');
+        if (checks) {
+            const verdict = await this.verify(checks, { exact: true });
+            if (!verdict.ok) return { ...(await this.end('unverified', CLIENT_SCRIPTS.cantAccept, game)), missing: verdict.missing };
         }
 
         // Installed, the script reports the chip's sector footers.

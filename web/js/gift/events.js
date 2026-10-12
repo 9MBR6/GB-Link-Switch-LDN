@@ -7,6 +7,7 @@ import { TEAM_EVENTS } from './team.js';
 import { SAVE_EVENTS } from './save-backup.js';
 import { RESTORE_EVENTS } from './save-restore.js';
 import { PAYLOAD_SCRIPT_OFFSET, WONDER_CARD_BYTES, gameOfCode, romId } from './mystery-gift.js';
+import { eventChecks } from './verify.js';
 
 export const EVENT_GROUPS = [
     { label: 'Event distributions', events: DISTRIBUTION_EVENTS },
@@ -21,14 +22,18 @@ export function findEvent(id) {
     return EVENTS.find((event) => event.id === id) ?? null;
 }
 
-// Every payload of the event for the game the Switch reports, as { card, script }.
+// The event's payloads for the game the Switch reports, as { card, script,
+// checks }; `checks` (verify.js) only where the ROM's addresses are predicted.
 export function eventPayloads(event, game) {
     const rom = romId(game);
     if (event.roms && !event.roms.includes(rom)) return [];
-    const all = event.payloads[rom] ?? (gameOfCode(game.gameCode) === 'frlg' ? event.payloads.frlg : null) ?? [];
+    const own = event.payloads[rom];
+    const all = own ?? (gameOfCode(game.gameCode) === 'frlg' ? event.payloads.frlg : null) ?? [];
+    const checks = own ? eventChecks(rom, event.id) : null;
     return all.map((bytes) => ({
         card: bytes.subarray(0, WONDER_CARD_BYTES),
         script: bytes.subarray(PAYLOAD_SCRIPT_OFFSET),
+        checks,
     }));
 }
 

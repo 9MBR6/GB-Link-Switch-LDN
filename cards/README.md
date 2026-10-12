@@ -1,34 +1,32 @@
 # GB-Link Team cards for the Switch
 
 The GB-Link Team's Wonder Cards from
-[gblink-wondercards](https://github.com/GB-Link/gblink-wondercards) (`tools/native-cards`),
-built for the Nintendo Switch release of FireRed and LeafGreen (revision 10, English). The
-web page sends them over Mystery Gift; `build.mjs` writes their payloads into
-`web/js/gift/team.js`.
+[gblink-wondercards](https://github.com/GB-Link/gblink-wondercards), made for the Nintendo
+Switch release of FireRed and LeafGreen in English, French, German, Italian and Spanish.
+The web page sends them to the Switch over Mystery Gift.
 
-A payload is a Wonder Card, then the RAM script the deliveryman runs. Most scripts carry a
-little ARM code, which uses the game's own routines and RAM, so each card is built for
-each ROM from its addresses in `roms.mjs`. Every script checks the ROM header first; on any
-other game the deliveryman says the gift doesn't work with it.
+Most cards carry a small program that works with the game's own code, so each card is made
+separately for every game and language. A card only runs in the game it was made for; in
+any other game, the deliveryman says the gift doesn't work with it.
+
+## The European games
+
+The French, German, Italian and Spanish cards are made from the English Switch games and
+the European Game Boy Advance games, and checked against the European Switch games
+themselves. Before the page sends one of these cards, or backs up or restores a save, it
+makes sure the game on the Switch is the one the card was made for. If it isn't, nothing is
+sent and the game is left as it was.
+
+The Japanese games are not supported.
 
 ## Rebuilding
 
-Needs Node.js and the arm-none-eabi binutils on `PATH`.
-
-```
-node cards/build.mjs
-```
-
-`roms.mjs` comes from pret's [pokefirered](https://github.com/pret/pokefirered) builds of the
-Switch's ROMs, which match them byte for byte:
-
-```
-make firered_switch leafgreen_switch        # in a pokefirered checkout
-node cards/rom-symbols.mjs <pokefirered dir>
-```
+After changing a card, rebuild them all with `node cards/build.mjs`. It needs Node.js and
+the arm-none-eabi tools.
 
 ## Differences from gblink-wondercards
 
-- Only the Switch's FireRed (`BPRE 1.10`) and LeafGreen (`BPGE 1.10`); no Emerald cards.
+- Only FireRed and LeafGreen for the Switch; no Emerald cards.
+- The card texts are in English in every language, as in gblink-wondercards.
 
 The sources are GPL-3.0, like gblink-wondercards.

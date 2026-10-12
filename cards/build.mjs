@@ -7,6 +7,11 @@
 //
 //   node cards/build.mjs
 //
+// For the European ROMs, whose addresses are predicted (predict-roms.mjs), it
+// also writes web/js/gift/rom-checks.js: what the page checks on the console
+// before it sends one of their cards, and where each card's script holds the
+// addresses it was built from.
+//
 // Each RAM script checks the ROM header first; on any other ROM the
 // deliveryman says the gift doesn't work. The speed cards, the Master Ball and
 // RAF's Pocket Casino keep their Wonder Card bytes apart from the footer (and
@@ -21,10 +26,14 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ROMS } from './roms.mjs';
+import { PREDICTED_ROMS, SEARCH } from './predicted-roms.mjs';
+import { ROMS as BUILT_ROMS } from './roms.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const EVENTS_FILE = join(HERE, '../web/js/gift/team.js');
+const CHECKS_FILE = join(HERE, '../web/js/gift/rom-checks.js');
+// The English ROMs, from pret's builds, then the European ones, predicted.
+const ROMS = { ...BUILT_ROMS, ...PREDICTED_ROMS };
 
 const WONDER_CARD_BYTES = 332;
 const PAYLOAD_SCRIPT_OFFSET = 336;
@@ -99,20 +108,25 @@ const FAMILIES = {
   },
 };
 
-// The Switch's ROMs are English: the cards' sources take these for every one.
-const LANGUAGE_SYMBOLS = { JAPANESE: 0, GAME_LANGUAGE: 2 };
+// The language numbers the games give their Pokémon, by the ROM header's letter.
+const GAME_LANGUAGES = { E: 2, F: 3, I: 4, D: 5, S: 7 };
 
-// A card's view of one ROM: its family's constants and the ROM's addresses.
-function gameOf(romId) {
+// A card's view of one ROM: its family's constants, the ROM's addresses and
+// its language (the texts stay English in every one).
+function gameOf(romId, moved = {}) {
   const rom = ROMS[romId];
   const family = FAMILIES[rom.family];
-  return { ...family, ...rom, id: romId, symbols: { ...rom.symbols, ...family.symbols, ...LANGUAGE_SYMBOLS } };
+  const language = rom.language ?? 'E';
+  return {
+    ...family, ...rom, language, id: romId,
+    symbols: { ...rom.symbols, ...moved, ...family.symbols, JAPANESE: 0, GAME_LANGUAGE: GAME_LANGUAGES[language] },
+  };
 }
 
-// The ROM header must name exactly this ROM: game letter, English, revision.
+// The ROM header must name exactly this ROM: game letter, language, revision.
 const romCheck = (game, wrong) => [
   compareAddrToValue(ROM_GAME, game.game), vgotoIf(NE, wrong),
-  compareAddrToValue(ROM_LANGUAGE, 'E'), vgotoIf(NE, wrong),
+  compareAddrToValue(ROM_LANGUAGE, game.language), vgotoIf(NE, wrong),
   compareAddrToValue(ROM_REVISION, game.revision), vgotoIf(NE, wrong),
 ];
 
@@ -1950,8 +1964,8 @@ function layout(items, base) {
 
 // The RAM script: the ROM check, the trampoline, the card's script and texts,
 // then its code.
-function buildScript(card, romId, dir) {
-  const game = gameOf(romId);
+function buildScript(card, romId, dir, moved = {}) {
+  const game = gameOf(romId, moved);
   const script = typeof card.script === 'function' ? card.script(game) : card.script;
   const code = card.source
     && assemble(card.source, { ...game.symbols, ...card.symbols, TEXT_BUFFER, RELOCATED, MENU_LIST,
@@ -1987,6 +2001,92 @@ function buildScript(card, romId, dir) {
     throw new Error(`${card.id} ${romId}: the script is ${out.length} bytes, over ${RAM_SCRIPT_BYTES}`);
   }
   return Uint8Array.from(out);
+}
+
+// ---- what the page checks on a predicted ROM
+
+// RAM and ROM addresses move by different amounts, so that distances within
+// each stay as they are.
+const MOVE_RAM = 0x1000;
+const MOVE_ROM = 0x100000;
+const isRam = (value) => value >= 0x02000000 && value < 0x04000000;
+const isRom = (value) => value >= 0x08000000 && value < 0x0a000000;
+const readU32 = (bytes, at) => (bytes[at] | (bytes[at + 1] << 8) | (bytes[at + 2] << 16) | (bytes[at + 3] << 24)) >>> 0;
+// cards/verify.s's table fits this many entries in the client's 1 KB buffer.
+const LINK_BUFFER_BYTES = 0x400;
+
+// Where a card's script holds the addresses it was built from, as
+// [[name, [offsets in the script]], ...]: the script built again with the
+// ROM's addresses moved, compared word by word; a word that moved is the
+// address closest below it.
+function addressesHeld(card, romId, base, dir) {
+  const rom = ROMS[romId];
+  const held = new Map();
+  for (const [inRegion, move] of [[isRam, MOVE_RAM], [isRom, MOVE_ROM]]) {
+    const names = Object.keys(rom.symbols).filter((name) => inRegion(rom.symbols[name]));
+    const moved = buildScript(card, romId, dir, Object.fromEntries(names.map((name) => [name, rom.symbols[name] + move])));
+    if (moved.length !== base.length) throw new Error(`${card.id} ${romId}: moving the addresses changed the script's size`);
+    const sorted = names.map((name) => [name, rom.symbols[name]]).sort((a, b) => a[1] - b[1]);
+    for (let at = 0; at + 4 <= base.length; at++) {
+      const was = readU32(base, at);
+      if (((readU32(moved, at) - was) >>> 0) !== move) continue;
+      const below = sorted.filter(([, value]) => value <= was).at(-1);
+      if (!below) throw new Error(`${card.id} ${romId}: no address below ${was.toString(16)} at ${at}`);
+      if (!held.has(below[0])) held.set(below[0], []);
+      held.get(below[0]).push(at);
+    }
+  }
+  return [...held].sort(([a], [b]) => (a < b ? -1 : 1));
+}
+
+// The same names at the same places, holding each ROM's own addresses.
+function sameHeld(card, held, built) {
+  const [first, ...others] = Object.keys(built);
+  for (const romId of others) {
+    for (const [name, offsets] of held) {
+      for (const at of offsets) {
+        const extra = readU32(built[first], at) - ROMS[first].symbols[name];
+        if (readU32(built[romId], at) - ROMS[romId].symbols[name] !== extra) {
+          throw new Error(`${card.id}: ${romId} holds ${name} differently at ${at}`);
+        }
+      }
+    }
+  }
+}
+
+const heldByCard = {};
+const hexWord = (value) => `0x${(value >>> 0).toString(16).padStart(8, '0')}`;
+
+function writeChecks(dir) {
+  const verify = assemble('verify.s', {}, dir);
+  const entries = (LINK_BUFFER_BYTES - verify.bytes.length) >> 3;
+  for (const [id, held] of Object.entries(heldByCard)) {
+    if (held.length > entries) throw new Error(`${id}: ${held.length} addresses to check, the check takes ${entries}`);
+  }
+  const roms = Object.entries(PREDICTED_ROMS).map(([romId, rom]) => {
+    const checks = Object.entries(rom.checks).map(([name, [at, value]]) =>
+      `        ${name}: [${hexWord(at)}, ${hexWord(value)}${isRam(rom.symbols[name]) ? ', 1' : ''}],\n`).join('');
+    return `    '${romId}': {\n${checks}    },\n`;
+  });
+  const events = Object.entries(heldByCard).map(([id, held]) =>
+    `    '${id}': [${held.map(([name, offsets]) => `['${name}', [${offsets.join(', ')}]]`).join(', ')}],\n`);
+  const saves = Object.entries(SAVE_SYMBOLS).map(([kind, names]) => `    ${kind}: [${names.map((name) => `'${name}'`).join(', ')}],\n`);
+  writeFileSync(CHECKS_FILE, '// Written by cards/build.mjs: what the page checks on the Switch before it\n'
+    + '// sends a card or runs a save script built from predicted addresses\n'
+    + '// (cards/predict-roms.mjs).\n\n'
+    + "import { decodeBase64 } from './payloads.js';\n\n"
+    + '// cards/verify.s: the count of its table at VERIFY_COUNT, up to VERIFY_ENTRIES\n'
+    + '// entries after it; it answers with where it found each, within VERIFY_SEARCH.\n'
+    + `export const VERIFY_SCRIPT = ${decodeText(Uint8Array.from(verify.bytes))};\n`
+    + `export const VERIFY_COUNT = 0x${verify.labels.count.toString(16)};\n`
+    + `export const VERIFY_ENTRIES = ${entries};\n`
+    + `export const VERIFY_SEARCH = ${SEARCH};\n\n`
+    + '// By ROM, each address\'s check: [where, the 4 bytes there as a word, 1 for RAM].\n'
+    + `export const ROM_CHECKS = {\n${roms.join('')}};\n\n`
+    + '// By event: the addresses its script holds, and where.\n'
+    + `export const EVENT_SYMBOLS = {\n${events.join('')}};\n\n`
+    + '// The addresses the save scripts are built from.\n'
+    + `export const SAVE_SYMBOLS = {\n${saves.join('')}};\n`);
 }
 
 // Base64 in lines of 76, continued lines indented by `indent`.
@@ -2034,11 +2134,18 @@ function payloadsText(card, kept, dir) {
     return `\n            frlg: [${decodeText(Buffer.concat([cardBytes, gap, kept.subarray(PAYLOAD_SCRIPT_OFFSET)]))}],`;
   }
   const built = {};
+  const scripts = {};
   for (const romId of Object.keys(ROMS)) {
     const script = buildScript(card, romId, dir);
+    scripts[romId] = script;
     built[romId] = Buffer.concat([cardBytes, gap, script]);
     console.log(`${card.id} ${romId}: script ${script.length} bytes`);
   }
+  const predicted = Object.fromEntries(Object.keys(PREDICTED_ROMS).map((romId) => [romId, scripts[romId]]));
+  const [first] = Object.keys(predicted);
+  const held = addressesHeld(card, first, predicted[first], dir);
+  sameHeld(card, held, predicted);
+  if (held.length) heldByCard[card.id] = held;
   const patches = Object.keys(ROMS).filter((romId) => romId !== BASE_ROM).map((romId) =>
     `\n                '${romId}': ${decodeText(patchOf(built[BASE_ROM], built[romId]))},`);
   return `\n            ...romPayloads(${decodeText(built[BASE_ROM])}, {${patches.join('')}\n            }),`;
@@ -2054,6 +2161,12 @@ const SAVE_MESSAGES = {
   NOT_RESTORED: 'The save could not be written.\nNothing was saved.',
 };
 
+// The addresses each save script is built from.
+const SAVE_SYMBOLS = {
+  backup: ['DECOMPRESSION_BUFFER', 'SEND_QUEUE_COUNT'],
+  restore: ['DECOMPRESSION_BUFFER', 'WRITE_SECTOR', 'LOAD_GAME_SAVE'],
+};
+
 function writeSavePayloads(dir) {
   const messages = Object.entries(SAVE_MESSAGES).map(([name, text]) => {
     const encoded = encodeText(text);
@@ -2061,9 +2174,10 @@ function writeSavePayloads(dir) {
     return `export const ${name} = ${decodeText(Uint8Array.from(encoded))};\n`;
   });
   const roms = Object.entries(ROMS).map(([romId, rom]) => {
-    const { DECOMPRESSION_BUFFER, SEND_QUEUE_COUNT, WRITE_SECTOR, LOAD_GAME_SAVE } = rom.symbols;
-    const backup = assemble('savebackup.s', { DECOMPRESSION_BUFFER, SEND_QUEUE_COUNT }, dir);
-    const restore = assemble('saverestore.s', { DECOMPRESSION_BUFFER, WRITE_SECTOR, LOAD_GAME_SAVE }, dir);
+    const { DECOMPRESSION_BUFFER } = rom.symbols;
+    const pick = (names) => Object.fromEntries(names.map((name) => [name, rom.symbols[name]]));
+    const backup = assemble('savebackup.s', pick(SAVE_SYMBOLS.backup), dir);
+    const restore = assemble('saverestore.s', pick(SAVE_SYMBOLS.restore), dir);
     for (const [name, built] of [['backup', backup], ['restore', restore]]) {
       if (built.bytes.length > 0x400) throw new Error(`save ${name} ${romId}: ${built.bytes.length} bytes, over 1 KB`);
     }
@@ -2090,6 +2204,7 @@ try {
   }
   writeFileSync(EVENTS_FILE, source);
   writeSavePayloads(dir);
+  writeChecks(dir);
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }
